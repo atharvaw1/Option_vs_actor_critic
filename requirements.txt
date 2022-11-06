@@ -1,2 +1,3 @@
 numpy
 pettingzoo[mpe]
+torch
