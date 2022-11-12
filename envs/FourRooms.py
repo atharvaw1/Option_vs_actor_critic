@@ -54,7 +54,7 @@ class FourRooms(gym.Env):
         """
         # reset the agent state to be [0, 0]
         self.agent_state, self.t = self.start_state, 0
-        return np.array(self.agent_state), {}
+        return np.array(self.agent_state), 0
 
     def is_wall(self, state: tuple):
         return (
