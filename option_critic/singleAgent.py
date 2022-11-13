@@ -13,7 +13,9 @@ class OptionCriticAgent(nn.Module):
         self.num_options = num_options
         self.current_option = 0
         self.gamma = 0.99
-        self.eps = 0.1
+        self.eps = 0.7
+        self.ent_coef = 0.01
+        self.term_reg = 0.01
 
         # self.state_features = nn.Sequential(
         #     nn.Linear(self.in_channels, 512),
@@ -58,10 +60,14 @@ class OptionCriticAgent(nn.Module):
         # Store log-prob for updates
         logprobs = torch.log_softmax(pi_logits[self.current_option, :], -1)
 
-        return a, beta_w, logprobs, Q
+        # Get entropy
+        probs = logprobs.exp()
+        entropy = (-(logprobs * probs)).sum(-1)
+
+        return a, beta_w, logprobs, entropy, Q
 
     def get_features(self, state):
-        state = Variable(torch.from_numpy(state).float().unsqueeze(0))
+        state = Variable(torch.from_numpy(state).float())
         return self.state_features(state)
 
     def get_Q(self, features):
@@ -70,25 +76,28 @@ class OptionCriticAgent(nn.Module):
     def get_option(self, q, out):
         beta_w = self.termination(out).flatten()[self.current_option].softmax(dim=-1)
         termination_w = torch.bernoulli(beta_w)
+
+        new_option= self.current_option
         # Change to e-greedy option if termination is > 0
         if termination_w > 0:
             if np.random.random() > self.eps:
-                self.current_option = q[0].argmax(dim=-1).item()
+                new_option = q[0].argmax(dim=-1).item()
             else:
-                self.current_option = np.random.randint(0, self.num_options)
+                new_option = np.random.randint(0, self.num_options)
 
-        return self.current_option, beta_w
+        return new_option, beta_w
 
     def get_termination_prob(self, next_s):
         features = self.get_features(next_s)
-        beta_w = self.termination(features).flatten()[self.current_option].softmax(dim=-1)
+        beta_w = self.termination(features)[:, self.current_option].softmax(dim=-1)
+
         return beta_w
 
     def compute_td_target(self, reward, done, next_s):
         with torch.no_grad():
             features = self.get_features(next_s)
             q_next = self.get_Q(features).flatten()
-            beta_w = self.get_termination_prob(next_s)
+            beta_w = self.get_termination_prob(next_s.reshape(1, next_s.shape[0]))[0]
 
             no_termination = (1 - beta_w) * q_next[self.current_option]
             termination = beta_w * q_next.max(dim=-1)[0]
@@ -96,11 +105,9 @@ class OptionCriticAgent(nn.Module):
             if done:
                 return reward
             else:
-                #print(reward + self.gamma * (no_termination + termination))
                 return reward + self.gamma * (no_termination + termination)
 
-
-    def actor_loss(self, td_target, logprob, beta_w, q):
+    def actor_loss(self, td_target, logprob, entropy, beta_w, q):
 
         with torch.no_grad():
             q_s = q.detach().flatten()
@@ -110,15 +117,36 @@ class OptionCriticAgent(nn.Module):
         # Policy loss
         policy_loss = (-logprob * (td_target - q_sw)).mean()
 
-        # Termination loss
-        termination_loss = (beta_w * (q_sw - v_s)).mean()
+        # Entropy loss
+        entropy_loss = (-entropy).mean()
 
-        actor_loss = policy_loss + termination_loss
+        # Termination loss
+        termination_loss = (beta_w * (q_sw - v_s + self.term_reg)).mean()
+
+        actor_loss = policy_loss + termination_loss + self.ent_coef * entropy_loss
 
         return actor_loss
 
-    def critic_loss(self, td_target, q):
-        q = q.flatten()
-        loss = (q[self.current_option] - td_target).pow(2).mean()
+    def critic_loss(self, data):
 
+        states, options, rewards, next_states, dones = data
+        batch_idx = torch.arange(len(options)).long()
+        options = torch.LongTensor(options)
+        rewards = torch.FloatTensor(rewards)
+        masks = 1 - torch.FloatTensor(dones)
+
+        term_probs = self.get_termination_prob(next_states).detach()
+
+        states = self.get_features(states).squeeze(0)
+        Q = self.get_Q(states)
+
+        next_states = self.get_features(next_states).squeeze(0)
+        next_Q = self.get_Q(next_states)
+
+        target = rewards + masks * self.gamma \
+                 * ((1 - term_probs) * next_Q[batch_idx, options]
+                    + term_probs * next_Q.max(dim=-1)[0]
+                    )
+
+        loss = (Q[batch_idx, options] - target.detach()).pow(2).mul(0.5).mean()
         return loss
