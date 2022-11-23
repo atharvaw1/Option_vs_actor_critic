@@ -9,6 +9,7 @@ from envs.FourRooms import FourRoomsController, FourRooms
 from option_critic.singleAgent import OptionCriticAgent
 import torch.optim as optim
 from experience_replay import ReplayBuffer
+import torch.nn as nn
 
 rooms = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
@@ -23,7 +24,7 @@ rooms = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
 ]
-timeout = 10_000
+timeout = 500
 
 controls = {
     0: (-1, 0),  # 'LEFT'
@@ -33,119 +34,143 @@ controls = {
 }
 
 
-def train(env, learning_rate, num_episodes, num_steps):
+def train(env, learning_rate, num_steps):
     agent = OptionCriticAgent(in_features=env.observation_space.shape[0],
                               num_actions=env.action_space.n,
                               num_options=4,
                               )
-    # Use Adam optimizer because it should converge faster than SGD and generalization may not be super important
-    oc_optimizer = optim.Adam(agent.parameters(), lr=learning_rate)
 
-    # all episode length
-    all_lengths = []
-    # average episode length
-    average_lengths = []
-    # all episode rewards
-    all_rewards = []
+    # Use Adam optimizer because it should converge faster than SGD and generalization may not be super important
+    oc_optimizer = optim.RMSprop(agent.parameters(), lr=learning_rate)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # No of steps before critic update
-    update_frequency = 16
+    update_frequency = 4
+    target_update_frequency = 200
 
-    buffer = ReplayBuffer(50000)
+    buffer = ReplayBuffer(10000)
 
-    for episode in range(num_episodes):
+    state, _ = env.reset()
+    rewards = []
+    train_returns = []
+    train_loss = []
+    episode = 0
+    for steps in range(num_steps):
 
-        rewards_list = []
+        action, beta_w, log_prob, entropy, Q = agent.forward(state)
 
-        state, _ = env.reset()
+        new_state, reward, done, _, _ = env.step(action)
 
-        if episode == 170:
-            agent.eps = 0.1
+        buffer.push(state, agent.current_option, reward, new_state, done)
 
-        for steps in range(num_steps):
+        rewards.append(reward)
 
-            action, termination, log_probs, entropy, Q = agent.forward(state)
+        state = new_state
 
-            new_state, reward, done, _, _ = env.step(action)
+        with torch.no_grad():
+            td_target = agent.compute_td_target(reward, done, new_state, beta_w)
 
-            buffer.push(state, agent.current_option, reward, new_state, done)
+        actor_loss = agent.actor_loss(td_target, log_prob, entropy, beta_w, Q)
+        critic_loss = torch.tensor([0])
+        # print(f"Actor Loss:{actor_loss}")
 
-            rewards_list.append(reward)
+        if len(buffer) > 32:
 
-            state = new_state
-
-
-
-
-            if len(buffer)>64:
-                with torch.no_grad():
-
-                    td_target = agent.compute_td_target(reward, done, new_state)
-
-                actor_loss = agent.actor_loss(td_target, log_probs, entropy, termination, Q)
-                critic_loss = 0
-
-                if steps % update_frequency == 0:
-                    data_batch = buffer.sample(64)
-                    critic_loss = agent.critic_loss(data_batch)
-
-                # print(f"Actor loss:{actor_loss}")
+            if steps % update_frequency == 0:
+                data_batch = buffer.sample(32)
+                critic_loss = agent.critic_loss(data_batch)
                 # print(f"Critic loss:{critic_loss}")
-                loss = actor_loss + critic_loss
-                oc_optimizer.zero_grad()
-                loss.backward()
-                oc_optimizer.step()
 
-            if done or steps == num_steps - 1:
-                if episode % 10 == 0:
-                    all_rewards.append(np.sum(rewards_list))
-                    all_lengths.append(steps)
-                    average_lengths.append(np.mean(all_lengths[-10:]))
-                    # Where total length is the number of steps taken in the episode and average length is average
-                    # steps in all episodes seen
-                    sys.stdout.write(
-                        "episode: {}, reward: {}, total length: {}, average length: {} \n".format(episode,
-                                                                                                  np.sum(
-                                                                                                      rewards_list),
-                                                                                                  steps,
-                                                                                                  average_lengths[-1]))
-                    # print(action_counts)
-                break
+
+        # print(f"Actor loss:{actor_loss}")
+        loss = actor_loss + critic_loss
+        train_loss.append(loss.detach().cpu().numpy())
+        oc_optimizer.zero_grad(True)
+        loss.backward()
+        oc_optimizer.step()
+
+        if steps % target_update_frequency == 0:
+            agent.update_target_net()
+
+        if done:
+            episode += 1
+            G = 0
+            for r in reversed(rewards):
+                G = r + 0.99 * G
+            train_returns.append(G)
+            rewards = []
+            state, _ = env.reset()
+            if True:#episode % 10 == 0:
+                print("Eps:", agent.eps)
+                # Where total length is the number of steps taken in the episode and average length is average
+                # steps in all episodes seen
+                sys.stdout.write("episode: {}, return: {} , steps: {}\n".format(episode, G, steps))
+    torch.save(agent.state_dict(), "model_checkpoint.pt")
     Vs = np.zeros((11, 11))
     for i in range(11):
         for j in range(11):
-            # print(agent.get_Q(agent.get_features(np.array([i, j]))).max(dim=-1)[0].cpu().detach().numpy())
+            print(agent.get_Q(agent.get_features(np.array([i, j]))).cpu().detach().numpy())
             Vs[i, j] = agent.get_Q(agent.get_features(np.array([i, j]))).max(dim=-1)[0].cpu().detach().numpy()
 
     print(Vs)
+
     plt.imshow(Vs, cmap='hot', interpolation='nearest')
     plt.show()
 
-    return all_rewards, all_lengths, average_lengths
+    return train_returns, train_loss
+
+
+def visualize_rollout():
+    env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+
+    agent = OptionCriticAgent(in_features=env.observation_space.shape[0],
+                              num_actions=env.action_space.n,
+                              num_options=4,
+                              )
+    agent.load_state_dict(torch.load("model_checkpoint.pt"))
+    arr = rooms.copy()
+    done = False
+    state, _ = env.reset()
+    time = 0
+    rewards = []
+
+    while not done:
+        # Get next action by greedy
+        # arr[h - 1 - state[1], state[0]] = 3
+        arr[state[0]][state[1]] = 3
+        action, _, _, _, _ = agent.forward(state)
+        next_s, reward, done, _, _ = env.step(action)
+        state = next_s
+        rewards.append(reward)
+        time += 1
+
+    G = 0
+    for r in reversed(rewards):
+        G = r + 0.99 * G
+    print(f"Return: {G} , Time:{time}")
+    plt.imshow(arr)
+    plt.show()
+
 
 
 if __name__ == '__main__':
-    # env = gym.make('CartPole-v0')
-    env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
-    rewards, lengths, avg_lengths = train(env, learning_rate=0.0005, num_episodes=5000, num_steps=1000)
 
-    np.save("rewards", rewards)
-    np.save("lengths", rewards)
-    np.save("avg_lengths", rewards)
-
-    plt.plot(rewards)
-    plt.plot()
-    plt.xlabel('Episode')
-    plt.ylabel('Reward')
-    plt.show()
-
-    plt.plot(lengths)
-    plt.xlabel('Episode')
-    plt.ylabel('Episode length')
-    plt.show()
-
-    plt.plot(avg_lengths)
-    plt.xlabel('Episode')
-    plt.ylabel('Average Episode length')
-    plt.show()
+    # env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+    # train_returns, train_loss = train(env, learning_rate=0.0005, num_steps=150_000)
+    #
+    #
+    # np.save("train_returns", train_returns)
+    # np.save("train_loss", train_loss)
+    #
+    # plt.plot(train_returns)
+    # plt.plot()
+    # plt.xlabel('Episode')
+    # plt.ylabel('Return')
+    # plt.show()
+    #
+    # plt.plot(train_loss)
+    # plt.xlabel('Steps')
+    # plt.ylabel('Loss')
+    # plt.show()
+    visualize_rollout()
