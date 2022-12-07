@@ -41,8 +41,9 @@ pytz==2022.6
 pyzmq==24.0.1
 six==1.16.0
 stack-data==0.6.0
-torch==1.13.0+cpu
+torch==1.11.0+cu113
 tornado==6.2
 traitlets==5.5.0
 typing_extensions==4.4.0
 wcwidth==0.2.5
+torchviz

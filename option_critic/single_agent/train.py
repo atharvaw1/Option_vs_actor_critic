@@ -1,5 +1,6 @@
 import sys
 
+import gym
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
@@ -23,7 +24,7 @@ rooms = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
 ]
-timeout = 500
+timeout = 1000
 
 controls = {
     0: (-1, 0),  # 'LEFT'
@@ -48,7 +49,7 @@ def train(env, learning_rate, num_steps):
     update_frequency = 4
     target_update_frequency = 200
 
-    buffer = ReplayBuffer(10000)
+    buffer = ReplayBuffer(50000)
 
     state, _ = env.reset()
     rewards = []
@@ -56,7 +57,7 @@ def train(env, learning_rate, num_steps):
     train_loss = []
     episode = 0
     steps = 0
-    while episode < 1000:
+    while episode < 2000:
         steps += 1
         action, beta_w, log_prob, entropy, Q = agent.forward(state)
 
@@ -109,7 +110,8 @@ def train(env, learning_rate, num_steps):
 
 
 def visualize_rollout():
-    env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+    # env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+
 
     agent = OptionCriticAgent(in_features=env.observation_space.shape[0],
                               num_actions=env.action_space.n,
@@ -188,11 +190,12 @@ if __name__ == '__main__':
     # env = simple_spread_v2.parallel_env(N=1, local_ratio=0.2, max_cycles=25, continuous_actions=False,
     #                                     render_mode=None)
 
-    num_trials = 5
+    num_trials = 1
     all_returns = []
     all_losses = []
     for i in range(num_trials):
         env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+        # env = gym.make("CartPole-v0")
         train_returns, train_loss = train(env, learning_rate=0.0005, num_steps=100_000)
         all_returns.append(train_returns)
         all_losses.append(train_loss)
@@ -201,15 +204,6 @@ if __name__ == '__main__':
     np.save("outputs/train_loss", all_losses)
     all_returns = np.load("outputs/train_returns.npy", allow_pickle=True)
     all_losses = np.load("outputs/train_loss.npy", allow_pickle=True)
-
-    # m = len(all_returns[0])
-    # for i in all_returns:
-    #     if len(i) < m:
-    #         m = len(i)
-    #
-    # all_returns_final = np.zeros((num_trials, m))
-    # for i in range(num_trials):
-    #     all_returns_final[i, :] = np.array(all_returns[i][:m])
 
     plot_curves([np.array(all_returns)],
                 ["Returns Averaged over 5 trials"],

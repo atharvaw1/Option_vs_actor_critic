@@ -17,16 +17,16 @@ class OptionCriticAgent(nn.Module):
         self.num_agents = num_agents
         self.current_options = Variable(
             torch.from_numpy(np.random.randint(num_options, size=num_agents)).long()).unsqueeze(1).to(self.device)
-        self.gamma = 0.95
-        self.eps_min = 0.1
+        self.gamma = 0.99
+        self.eps_min = 0.01
         self.eps_start = 1.0
         self.num_steps = 0
-        self.duration = 50_000
+        self.duration = 200_000
 
         self.deliberation_cost = 0.01
         self.termination_counts = 0
 
-        self.ent_coef = 0.01
+        self.ent_coef = 0.05
         self.term_reg = 0.01
         self.val_coef = 0.5
 
@@ -35,7 +35,7 @@ class OptionCriticAgent(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(128, 128),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 64),
+            nn.Linear(128, 128),
             nn.ReLU(inplace=True)
         )
 
@@ -44,14 +44,14 @@ class OptionCriticAgent(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(128, 128),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 64),
+            nn.Linear(128, 128),
             nn.ReLU(inplace=True)
         )
 
-        self.Q = nn.Linear(64, self.num_agents * self.num_options)
-        self.target_q = nn.Linear(64, self.num_agents * self.num_options)
-        self.policy = nn.Linear(64, self.num_agents * self.num_options * self.num_actions)
-        self.termination = nn.Linear(64, self.num_agents * self.num_options)
+        self.Q = nn.Linear(128, self.num_agents * self.num_options)
+        self.target_q = nn.Linear(128, self.num_agents * self.num_options)
+        self.policy = nn.Linear(128, self.num_agents * self.num_options * self.num_actions)
+        self.termination = nn.Linear(128, self.num_agents * self.num_options)
 
     def forward(self, state):
         """Take in observation from env and do 1 forward pass through network.
@@ -71,15 +71,22 @@ class OptionCriticAgent(nn.Module):
         pi_logits = self.policy(out).reshape(self.num_agents, self.num_options, self.num_actions)
 
         # Get current options for all agents and apply softmax
-        pi_w = pi_logits[torch.arange(len(pi_logits)), self.current_options.view(-1)].softmax(-1)
+        pi_w = torch.empty(self.num_agents, self.num_actions)
+        for i in range(pi_logits.shape[0]):
+            pi_w[i, :] = (pi_logits[i, self.current_options[i][0], :])
+
+        pi_w = torch.Tensor(pi_w).softmax(-1)
+        # pi_w = pi_logits[torch.arange(len(pi_logits)), self.current_options.view(-1)].softmax(-1)
 
         # Sample actions from distribution
-        action_dist = Categorical(pi_w)
-        actions = action_dist.sample()
+        actions = torch.multinomial(pi_w, 1)
 
         # Get log probabilities and entropy for gradients
-        logprob = action_dist.log_prob(actions)
-        entropy = action_dist.entropy()
+        logprobs = pi_w.log_softmax(-1)
+        logprob = logprobs.gather(-1, actions).squeeze(-1)
+
+        probs = logprobs.exp()
+        entropy = (-logprobs * probs).sum(-1)
 
         return actions.cpu().numpy(), self.current_options, beta_w, logprob, entropy, q
 
@@ -124,11 +131,11 @@ class OptionCriticAgent(nn.Module):
 
     def compute_td_target(self, reward, done, next_s, beta_w):
         with torch.no_grad():
+            reward = torch.Tensor(reward).unsqueeze(-1).to(self.device)
             features = self.get_features(next_s)
             q_next = self.get_Q(features).reshape(self.num_agents, self.num_options)
-            no_termination = ((1 - beta_w) * q_next.gather(1, self.current_options)).mean()
-            termination = (beta_w.squeeze() * q_next.max(-1)[0]).mean()
-
+            no_termination = ((1 - beta_w) * q_next.gather(1, self.current_options))
+            termination = (beta_w.squeeze() * q_next.max(-1)[0]).unsqueeze(-1)
             return reward + self.gamma * (no_termination + termination) * (1 - done)
 
     def actor_loss(self, td_target, logprob, entropy, beta_w, q):
@@ -139,13 +146,13 @@ class OptionCriticAgent(nn.Module):
             q_sw = q_s.gather(1, self.current_options).squeeze()
 
         # Policy loss
-        policy_loss = (-logprob * (td_target.detach() - q_sw)).mean()
+        policy_loss = (-logprob.to(self.device) * (td_target.squeeze().detach() - q_sw))
 
         # Entropy loss
-        entropy_loss = -entropy.mean()
+        entropy_loss = -entropy.to(self.device)
 
         # Termination loss
-        termination_loss = (beta_w.squeeze() * (q_sw - v_s)).mean() + (self.termination_counts * self.deliberation_cost)
+        termination_loss = (beta_w.squeeze() * (q_sw - v_s)) + (self.termination_counts * self.deliberation_cost)
 
         actor_loss = policy_loss + termination_loss + self.ent_coef * entropy_loss
 
@@ -155,7 +162,7 @@ class OptionCriticAgent(nn.Module):
 
         states, options, rewards, next_states, dones = data
         options = torch.LongTensor(np.array(options)).to(self.device)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+        rewards = torch.FloatTensor(rewards).reshape(-1,self.num_agents).to(self.device)
         masks = (1 - torch.LongTensor(dones)).unsqueeze(1).to(self.device)
 
         with torch.no_grad():
@@ -165,13 +172,15 @@ class OptionCriticAgent(nn.Module):
 
         # Target network for bootstrap
         next_q = self.get_targetQ(next_states).reshape(-1, self.num_agents, self.num_options)
+        # next_q = self.get_Q(self.get_features(next_states)).reshape(-1, self.num_agents, self.num_options)
 
         target = rewards + masks * self.gamma \
                  * ((1 - term_probs) * next_q.gather(2, options).reshape(-1, self.num_agents)
                     + term_probs * next_q.max(dim=-1)[0]
                     )
 
-        loss = self.val_coef * (q.gather(2, options).reshape(-1, self.num_agents) - target.detach()).pow(2).mean()
+        loss = self.val_coef * (q.gather(2, options).reshape(-1, self.num_agents) - target.detach()).pow(2).mean(0)
+
         return loss
 
     def update_target_net(self):

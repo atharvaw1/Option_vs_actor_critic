@@ -13,9 +13,9 @@ class OptionCriticAgent(nn.Module):
         self.num_actions = num_actions
         self.num_options = num_options
         self.current_option = np.random.randint(num_options)
-        self.gamma = 0.99
+        self.gamma = 1
         self.eps_min = 0.1
-        self.eps_start = 1.0
+        self.eps_start = 0.99
         self.num_steps = 0
         self.duration = 50_000
 
