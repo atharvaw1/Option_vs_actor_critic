@@ -20,13 +20,22 @@ def obs_to_state(observation_dict):
     return np.array(state).flatten()
 
 
+def reward_dict_to_r(reward_dict):
+    rewards = []
+    for agent in sorted(reward_dict):
+        # rewards.append( (reward_dict[agent]-reward_min) / (reward_max-reward_min))
+        rewards.append(reward_dict[agent])
+
+    return np.array(rewards).flatten()
+
+
 def train(env, learning_rate, num_steps):
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = "cuda"
     print(device)
     agent = OptionCriticAgent(in_features=env.state_space.shape[0],
                               num_actions=env.action_space(env.possible_agents[0]).n,
-                              num_options=8,
+                              num_options=5,
                               num_agents=env.max_num_agents,
                               device=device
                               )
@@ -37,38 +46,41 @@ def train(env, learning_rate, num_steps):
     agent.to(device)
     # No of steps before critic update
     update_frequency = 4
-    target_update_frequency = 200
+    target_update_frequency = 4
     batch_size = 32
 
-    buffer = ReplayBuffer(100_000)
+    buffer = ReplayBuffer(10_000)
     torch.autograd.set_detect_anomaly(True)
     rewards = []
     train_returns = []
     train_loss = []
-    train_closs = []
-    train_aloss = []
     episode = 0
 
     obs_dict = env.reset()
     # Create state from observations of all agents
     state = obs_to_state(obs_dict)
 
+
     for steps in range(num_steps):
 
         actions, options, beta_w, log_prob, entropy, q = agent.forward(state)
         # Change actions to dict for sending to environment
         actions_dict = {agent: actions[i][0] for i, agent in enumerate(env.agents)}
+        # actions_dict = {agent: env.action_space(env.possible_agents[0]).sample() for i, agent in enumerate(
+        # env.agents)}
 
         new_obs_dict, reward_dict, _, dones, _ = env.step(actions_dict)
 
         new_state = obs_to_state(new_obs_dict)
-        reward = sum(reward_dict.values())
-        reward = [reward]*env.max_num_agents
+        # reward = (sum(reward_dict.values()))
+        # reward = [reward]*env.max_num_agents
+        reward = reward_dict_to_r(reward_dict)
+
         done = not (False in dones.values())  # If all agents are done then end episode
 
         buffer.push(state, agent.current_options.cpu().numpy(), reward, new_state, done)
 
-        rewards.append(reward[0])
+        rewards.append(sum(reward_dict.values()))
 
         state = new_state
 
@@ -76,7 +88,7 @@ def train(env, learning_rate, num_steps):
             td_target = agent.compute_td_target(reward, done, new_state, beta_w)
 
         actor_loss = agent.actor_loss(td_target, log_prob, entropy, beta_w, q)
-        critic_loss = torch.tensor(0,dtype=torch.float).to(device)
+        critic_loss = torch.tensor(0, dtype=torch.float).to(device)
         # print(f"Actor Loss:{actor_loss}")
 
         if len(buffer) > batch_size:
@@ -88,8 +100,6 @@ def train(env, learning_rate, num_steps):
 
         # print(f"Actor loss:{actor_loss}")
         loss = (actor_loss + critic_loss).sum()
-        train_aloss.append(actor_loss.mean().detach().cpu().numpy())
-        train_closs.append(critic_loss.mean().detach().cpu().numpy())
         train_loss.append(loss.detach().cpu().numpy())
         oc_optimizer.zero_grad()
         loss.backward()
@@ -105,7 +115,7 @@ def train(env, learning_rate, num_steps):
             episode += 1
             G = 0
             for r in reversed(rewards):
-                G = r + 0.99 * G
+                G = r + 1 * G
             train_returns.append(G)
             rewards = []
             obs_dict = env.reset()
@@ -114,17 +124,18 @@ def train(env, learning_rate, num_steps):
             if episode % 10 == 0:
                 print("Eps:", agent.eps)
                 sys.stdout.write("episode: {}, return: {} , steps: {}\n".format(episode, G, steps))
-    torch.save(agent.state_dict(), "outputs/model_checkpoint_n2.pt")
+    torch.save(agent.state_dict(), "outputs/n3/model_checkpoint_n3.pt")
 
-    return train_returns, train_loss, train_aloss, train_closs
+    return train_returns, train_loss
 
 
 def visualize_rollout(env, model_path):
     agent = OptionCriticAgent(in_features=env.state_space.shape[0],
                               num_actions=env.action_space(env.possible_agents[0]).n,
-                              num_options=4,
+                              num_options=5,
                               num_agents=env.max_num_agents,
-                              device="cpu"
+                              device="cpu",
+                              test=True
                               )
     agent.load_state_dict(torch.load(model_path))
 
@@ -140,6 +151,7 @@ def visualize_rollout(env, model_path):
         time.sleep(0.1)
         env.render()
         actions_dict = {agent: actions[i][0] for i, agent in enumerate(env.agents)}
+        # actions_dict = {agent: env.action_space(env.possible_agents[0]).sample() for i, agent in enumerate(env.agents)}
         next_obs, reward_dict, dones, _, _ = env.step(actions_dict)
         done = not (False in dones.values())
 
@@ -154,7 +166,7 @@ def visualize_rollout(env, model_path):
 
     G = 0
     for r in reversed(rewards):
-        G = r + 0.99 * G
+        G = r + 1 * G
     print(f"Return: {G} , Time:{t}")
 
 
@@ -203,46 +215,33 @@ def plot_curves(arr_list, legend_list, color_list, xlabel, ylabel, fig_title):
 
 if __name__ == '__main__':
 
-    env = simple_spread_v2.parallel_env(N=2, local_ratio=0.0, max_cycles=25, continuous_actions=False,
-                                        render_mode=None)
+    # env = simple_spread_v2.parallel_env(N=3, local_ratio=0.5, max_cycles=25, continuous_actions=False,render_mode=None)
+    #
+    # num_trials = 3
+    # all_returns = []
+    # all_losses = []
+    # for i in range(num_trials):
+    #     train_returns, train_loss = train(env, learning_rate=0.004, num_steps= 600_000)
+    #     all_returns.append(train_returns)
+    #     all_losses.append(train_loss)
+    #
+    # np.save("outputs/train_returns_n3", all_returns)
+    # np.save("outputs/train_loss_n3", all_losses)
+    # all_returns = np.load("outputs/train_returns_n3.npy", allow_pickle=True)
+    # all_losses = np.load("outputs/train_loss_n3.npy", allow_pickle=True)
+    #
+    # plot_curves([np.array(all_returns)],
+    #             ["Returns Averaged over 5 trials"],
+    #             ["b"],
+    #             "Episodes",
+    #             "Averaged discounted return", "Returns Over 5 Trails (N=3)")
+    #
+    # plot_curves([np.array(all_losses)],
+    #             ["Losses Averaged over 5 trials"],
+    #             ["r"],
+    #             "Time Steps",
+    #             "Averaged loss", "Losses Over 5 Trails (N=3)")
 
-    num_trials = 1
-    all_returns = []
-    all_losses = []
-    for i in range(num_trials):
-        train_returns, train_loss, actor_loss, critic_loss = train(env, learning_rate=0.0005, num_steps=800_000)
-        all_returns.append(train_returns)
-        all_losses.append(train_loss)
-
-    np.save("outputs/train_returns_n2", all_returns)
-    np.save("outputs/train_loss_n2", all_losses)
-    all_returns = np.load("outputs/train_returns_n2.npy", allow_pickle=True)
-    all_losses = np.load("outputs/train_loss_n2.npy", allow_pickle=True)
-
-    plot_curves([np.array(all_returns)],
-                ["Returns Averaged over 5 trials"],
-                ["b"],
-                "Episodes",
-                "Averaged discounted return", "Returns Over 5 Trails (N=2)")
-
-    plot_curves([np.array(all_losses)],
-                ["Losses Averaged over 5 trials"],
-                ["r"],
-                "Time Steps",
-                "Averaged loss", "Losses Over 5 Trails (N=2)")
-
-    plot_curves([np.array([actor_loss])],
-                ["Actor Losses Averaged over 5 trials"],
-                ["r"],
-                "Time Steps",
-                "Averaged loss", "Actor Losses Over 5 Trails (N=2)")
-
-    plot_curves([np.array([critic_loss])],
-                ["Critic Losses Averaged over 5 trials"],
-                ["r"],
-                "Time Steps",
-                "Averaged loss", "Critic Losses Over 5 Trails (N=2)")
-
-    # env = simple_spread_v2.parallel_env(N=2, local_ratio=0.2, max_cycles=25, continuous_actions=False,
-    #                                     render_mode="human")
-    # visualize_rollout(env, "outputs/model_checkpoint_n2.pt")
+    env = simple_spread_v2.parallel_env(N=3, local_ratio=0.5, max_cycles=25, continuous_actions=False,
+                                        render_mode="human")
+    visualize_rollout(env, "outputs/n3/model_checkpoint_n3.pt")

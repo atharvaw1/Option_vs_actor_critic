@@ -55,8 +55,10 @@ def train(env, learning_rate, num_steps):
     rewards = []
     train_returns = []
     train_loss = []
+    episode_length = []
     episode = 0
     steps = 0
+    prev_steps = 0
     while episode < 2000:
         steps += 1
         action, beta_w, log_prob, entropy, Q = agent.forward(state)
@@ -94,6 +96,8 @@ def train(env, learning_rate, num_steps):
 
         if done:
             episode += 1
+            episode_length.append(steps - prev_steps)
+            prev_steps = steps
             G = 0
             for r in reversed(rewards):
                 G = r + 0.99 * G
@@ -106,18 +110,47 @@ def train(env, learning_rate, num_steps):
                 sys.stdout.write("episode: {}, return: {} , steps: {}\n".format(episode, G, steps))
     torch.save(agent.state_dict(), "outputs/model_checkpoint.pt")
 
-    return train_returns, train_loss
+    return train_returns, train_loss, episode_length
 
 
 def visualize_rollout():
-    # env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
-
+    import matplotlib.patches as mpatches
+    env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
 
     agent = OptionCriticAgent(in_features=env.observation_space.shape[0],
                               num_actions=env.action_space.n,
                               num_options=4,
                               )
-    agent.load_state_dict(torch.load("outputs/model_checkpoint_n1.pt"))
+    agent.load_state_dict(torch.load("outputs/model_checkpoint.pt"))
+
+    # Heatmap for state values
+    value_heatmap = np.array([[-10 for i in range(11)] for j in range(11)])
+    option_heatmap = np.array([[-1 for i in range(11)] for j in range(11)])
+    for i in range(11):
+        for j in range(11):
+            if rooms[i][j] == 1:
+                print(i,j)
+                continue
+            state = np.array((i, j))
+            f = agent.get_features(state)
+            q = agent.get_Q(f)
+            v = q.max(-1)[0].detach().numpy()
+            option, _ = agent.get_option(q, f)
+            value_heatmap[i][j] = v
+            option_heatmap[i][j] = option
+
+    plt.imshow(value_heatmap)
+    plt.show()
+
+    img2 = plt.imshow(option_heatmap)
+    values = np.unique(option_heatmap.ravel())
+    colors = [img2.cmap(img2.norm(value)) for value in values]
+    patches = [mpatches.Patch(color=colors[i], label="Option {l}".format(l=i)) for i in range(1, len(values))]
+    # put those patched as legend-handles into the legend
+    plt.legend(handles=patches, loc="center left", bbox_to_anchor=(1, 0.5), borderaxespad=0.)
+    plt.imshow(option_heatmap)
+    plt.show()
+
     arr = rooms.copy()
     done = False
     state, _ = env.reset()
@@ -186,29 +219,37 @@ def plot_curves(arr_list, legend_list, color_list, xlabel, ylabel, fig_title):
 
 
 if __name__ == '__main__':
-
     # env = simple_spread_v2.parallel_env(N=1, local_ratio=0.2, max_cycles=25, continuous_actions=False,
     #                                     render_mode=None)
 
-    num_trials = 1
-    all_returns = []
-    all_losses = []
-    for i in range(num_trials):
-        env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
-        # env = gym.make("CartPole-v0")
-        train_returns, train_loss = train(env, learning_rate=0.0005, num_steps=100_000)
-        all_returns.append(train_returns)
-        all_losses.append(train_loss)
+    # num_trials = 5
+    # all_returns = []
+    # all_losses = []
+    # all_lengths = []
+    # for i in range(num_trials):
+    #     env = FourRoomsController(FourRooms(rooms, timeout=timeout), controls=controls)
+    #     # env = gym.make("CartPole-v0")
+    #     train_returns, train_loss, episode_length = train(env, learning_rate=0.0005, num_steps=100_000)
+    #     all_returns.append(train_returns)
+    #     all_losses.append(train_loss)
+    #     all_lengths.append(episode_length)
 
-    np.save("outputs/train_returns", all_returns)
-    np.save("outputs/train_loss", all_losses)
-    all_returns = np.load("outputs/train_returns.npy", allow_pickle=True)
-    all_losses = np.load("outputs/train_loss.npy", allow_pickle=True)
+    # np.save("outputs/train_returns", all_returns)
+    # np.save("outputs/train_loss", all_losses)
+    # np.save("outputs/episode_length", all_lengths)
+    # all_returns = np.load("outputs/train_returns.npy", allow_pickle=True)
+    # all_losses = np.load("outputs/train_loss.npy", allow_pickle=True)
+    # all_lengths = np.load("outputs/episode_length.npy", allow_pickle=True)
+    #
+    # plot_curves([np.array(all_returns)],
+    #             ["Returns Averaged over 5 trials"],
+    #             ["b"],
+    #             "Episodes",
+    #             "Averaged discounted return", "Returns Over 5 Trails")
+    # plot_curves([np.array(all_lengths)],
+    #             ["Episode Lengths Averaged over 5 trials"],
+    #             ["b"],
+    #             "Episodes",
+    #             "Averaged Episode Length", "Lengths Over 5 Trails")
 
-    plot_curves([np.array(all_returns)],
-                ["Returns Averaged over 5 trials"],
-                ["b"],
-                "Episodes",
-                "Averaged discounted return", "Returns Over 5 Trails")
-
-    # visualize_rollout()
+    visualize_rollout()

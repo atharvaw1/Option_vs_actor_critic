@@ -6,7 +6,7 @@ from torch.distributions import Categorical
 
 
 class OptionCriticAgent(nn.Module):
-    def __init__(self, in_features, num_actions, num_options, num_agents, device):
+    def __init__(self, in_features, num_actions, num_options, num_agents, device, test=False):
 
         super().__init__()
 
@@ -17,41 +17,43 @@ class OptionCriticAgent(nn.Module):
         self.num_agents = num_agents
         self.current_options = Variable(
             torch.from_numpy(np.random.randint(num_options, size=num_agents)).long()).unsqueeze(1).to(self.device)
-        self.gamma = 0.99
+        self.gamma = 0.95
         self.eps_min = 0.01
         self.eps_start = 1.0
         self.num_steps = 0
-        self.duration = 200_000
+        self.duration = 150_000
 
-        self.deliberation_cost = 0.01
+        self.deliberation_cost = 0.001
         self.termination_counts = 0
 
-        self.ent_coef = 0.05
-        self.term_reg = 0.01
-        self.val_coef = 0.5
+        self.ent_coef = 0.0
+        self.term_reg = 0.001
+        self.val_coef = 1
+
+        self.test = test
 
         self.target_net_features = nn.Sequential(
-            nn.Linear(self.in_channels, 128),
+            nn.Linear(self.in_channels, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
+            nn.Linear(64, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
+            nn.Linear(64, 64),
             nn.ReLU(inplace=True)
         )
 
         self.state_features = nn.Sequential(
-            nn.Linear(self.in_channels, 128),
+            nn.Linear(self.in_channels, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
+            nn.Linear(64, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
+            nn.Linear(64, 64),
             nn.ReLU(inplace=True)
         )
 
-        self.Q = nn.Linear(128, self.num_agents * self.num_options)
-        self.target_q = nn.Linear(128, self.num_agents * self.num_options)
-        self.policy = nn.Linear(128, self.num_agents * self.num_options * self.num_actions)
-        self.termination = nn.Linear(128, self.num_agents * self.num_options)
+        self.Q = nn.Linear(64, self.num_agents * self.num_options)
+        self.target_q = nn.Linear(64, self.num_agents * self.num_options)
+        self.policy = nn.Linear(64, self.num_agents * self.num_options * self.num_actions)
+        self.termination = nn.Linear(64, self.num_agents * self.num_options)
 
     def forward(self, state):
         """Take in observation from env and do 1 forward pass through network.
@@ -162,7 +164,7 @@ class OptionCriticAgent(nn.Module):
 
         states, options, rewards, next_states, dones = data
         options = torch.LongTensor(np.array(options)).to(self.device)
-        rewards = torch.FloatTensor(rewards).reshape(-1,self.num_agents).to(self.device)
+        rewards = torch.FloatTensor(np.array(rewards)).reshape(-1,self.num_agents).to(self.device)
         masks = (1 - torch.LongTensor(dones)).unsqueeze(1).to(self.device)
 
         with torch.no_grad():
@@ -189,10 +191,11 @@ class OptionCriticAgent(nn.Module):
 
     @property
     def eps(self):
+
         """Linear decay for epsilon"""
         self.num_steps += 1
 
-        if self.num_steps > self.duration:
+        if self.num_steps > self.duration or self.test:
             return self.eps_min
         else:
             return self.eps_start + (((self.eps_min - self.eps_start) / self.duration) * self.num_steps)

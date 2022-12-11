@@ -246,7 +246,7 @@ if __name__ == '__main__':
         all_returns.append(train_returns)
 
     np.save("outputs/decentralized_train_returns_n2", all_returns)
-    all_returns = np.load("outputs/decentralized_train_returns_n2.npy", allow_pickle=True)
+    all_returns = np.load("outputs/n2/decentralized_train_returns_n2.npy", allow_pickle=True)
 
     plot_curves([np.array(all_returns)],
                 ["Returns"],
