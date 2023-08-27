@@ -1,4 +1,4 @@
-# CS5180-project
+# Option_vs_actor_critic for MARL
 Comparing  centralized and decentralized actor-critic and option-critic variants for MARL.
 Further details can be found in the  projet paper in this repository. https://github.com/atharvaw1/CS5180-project/blob/main/RL_Project_Paper.pdf
 
